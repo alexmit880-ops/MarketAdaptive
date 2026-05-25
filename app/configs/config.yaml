@@ -1,0 +1,29 @@
+env: dev
+
+symbol: BTCUSDT
+
+logging:
+  level: INFO
+  file: logs/bot.log
+  rotation: 10 MB
+  retention: 7 days
+
+ws:
+  # ДЕМО-адрес сокетов (добавилась приставка -demo)
+  endpoint: "wss://stream.bybit.com/v5/public/linear"
+  interval: "1"
+  reconnect_min_delay: 0.5
+  reconnect_max_delay: 20.0
+  heartbeat_interval: 10.0
+  stale_timeout: 3.0
+
+exchange:
+  api_key: "mCf0AZl553Z35jfRmK"
+  api_secret: "pjZvxSLnjg4vRI0VHpVM3ZTAnNZp9RA6eb1J"
+  base_url: "https://api-demo.bybit.com"  # Точный URL для демо-запросов
+  is_demo: true                           # Жесткий флаг для активации демо-режима в коде
+
+risk:
+  balance: 1000.0
+  max_risk_per_trade: 0.02
+  max_total_exposure: 0.1
