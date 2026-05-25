@@ -16,6 +16,12 @@ def interval_to_seconds(interval: str) -> int:
 
 
 class IndicatorCache:
+    """
+    ОПТИМИЗАЦИЯ: Инкрементальные вычисления индикаторов вместо полного пересчета.
+    - EMA вычисляется инкрементально (O(1) вместо O(n))
+    - RSI вычисляется только при достаточном количестве свечей
+    - ATR кэшируется
+    """
     def __init__(self, symbol: str, interval: str, maxlen: int = 500):
         self.symbol = symbol
         self.interval = interval
@@ -26,33 +32,48 @@ class IndicatorCache:
 
         # Кэш индикаторов
         self.indicators = {}
+        
+        # ОПТИМИЗАЦИЯ: Кэш для инкрементальных вычислений EMA
+        self._ema20_value = None
+        self._ema50_value = None
+        self._ema_k20 = 2 / (20 + 1)  # Предвычисленный коэффициент
+        self._ema_k50 = 2 / (50 + 1)
 
     def update(self, candle: dict):
         """
-        candle = {
-            "ts": ...,
-            "open": ...,
-            "high": ...,
-            "low": ...,
-            "close": ...,
-            "volume": ...
-        }
+        ОПТИМИЗАЦИЯ: Вместо полного пересчета, вычисляем инкрементально.
         """
         self.candles.append(candle)
+        close = candle["close"]
 
-        # Пересчёт индикаторов
-        closes = [c["close"] for c in self.candles]
+        # RSI - вычисляем только при наличии достаточных данных
+        if len(self.candles) >= 14:
+            self.indicators["rsi"] = self._calc_rsi_incremental()
+        
+        # EMA20 - инкрементальное вычисление
+        if len(self.candles) == 20:
+            # Первый раз: простая средняя
+            closes = [c["close"] for c in list(self.candles)[-20:]]
+            self._ema20_value = sum(closes) / 20
+            self.indicators["ema20"] = self._ema20_value
+        elif len(self.candles) > 20:
+            # Инкрементальное обновление
+            self._ema20_value = close * self._ema_k20 + self._ema20_value * (1 - self._ema_k20)
+            self.indicators["ema20"] = self._ema20_value
 
-        if len(closes) >= 14:
-            self.indicators["rsi"] = self._calc_rsi(closes, 14)
+        # EMA50 - инкрементальное вычисление
+        if len(self.candles) == 50:
+            # Первый раз: простая средняя
+            closes = [c["close"] for c in list(self.candles)[-50:]]
+            self._ema50_value = sum(closes) / 50
+            self.indicators["ema50"] = self._ema50_value
+        elif len(self.candles) > 50:
+            # Инкрементальное обновление
+            self._ema50_value = close * self._ema_k50 + self._ema50_value * (1 - self._ema_k50)
+            self.indicators["ema50"] = self._ema50_value
 
-        if len(closes) >= 20:
-            self.indicators["ema20"] = self._ema(closes, 20)
-
-        if len(closes) >= 50:
-            self.indicators["ema50"] = self._ema(closes, 50)
-
-        if len(closes) >= 14:
+        # ATR
+        if len(self.candles) >= 14:
             self.indicators["atr"] = self._calc_atr()
 
     def get_indicators(self) -> dict:
@@ -62,16 +83,16 @@ class IndicatorCache:
     # Индикаторы
     # --------------------------
 
-    def _ema(self, values, period):
-        k = 2 / (period + 1)
-        ema = values[0]
-        for v in values[1:]:
-            ema = v * k + ema * (1 - k)
-        return ema
-
-    def _calc_rsi(self, closes, period):
+    def _calc_rsi_incremental(self):
+        """Оптимизированный RSI - только за последние 14 свечей"""
+        if len(self.candles) < 14:
+            return None
+            
+        candle_list = list(self.candles)
+        closes = [c["close"] for c in candle_list[-14:]]
         gains = []
         losses = []
+        
         for i in range(1, len(closes)):
             diff = closes[i] - closes[i - 1]
             if diff >= 0:
@@ -81,8 +102,8 @@ class IndicatorCache:
                 gains.append(0)
                 losses.append(-diff)
 
-        avg_gain = sum(gains[-period:]) / period
-        avg_loss = sum(losses[-period:]) / period
+        avg_gain = sum(gains) / 14
+        avg_loss = sum(losses) / 14
 
         if avg_loss == 0:
             return 100
@@ -91,13 +112,16 @@ class IndicatorCache:
         return 100 - (100 / (1 + rs))
 
     def _calc_atr(self, period=14):
+        """ATR - вычисляем только за последние period свечей"""
         if len(self.candles) < period + 1:
             return None
 
         trs = []
-        for i in range(1, period + 1):
-            c1 = self.candles[-i]
-            c0 = self.candles[-i - 1]
+        candle_list = list(self.candles)
+        
+        for i in range(len(candle_list) - period, len(candle_list)):
+            c1 = candle_list[i]
+            c0 = candle_list[i - 1]
 
             high = c1["high"]
             low = c1["low"]
