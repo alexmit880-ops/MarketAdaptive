@@ -14,12 +14,14 @@ logger = logging.getLogger("Infrastructure.BybitREST")
 class BybitREST:
     """
     Класс для работы с REST API Bybit v5.
-    Автоматически синхронизирует время и создает цифровые подписи.
+    Автоматически синхронизирует время один раз при запуске и создает цифровые подписи.
+    ОПТИМИЗАЦИЯ: Убрана синхронизация часов из каждого запроса.
     """
     def __init__(self, api_key: str, api_secret: str, base_url: str = "", is_demo: bool = True, is_testnet: bool = False):
         self.api_key = api_key.strip()
         self.api_secret = api_secret.strip()
         self.time_offset = 0
+        self._clock_synced = False  # Флаг синхронизации часов
         
         # Точное разделение серверов: Демо, Тестнет или Боевой
         if is_demo:
@@ -35,18 +37,23 @@ class BybitREST:
     async def _get_session(self) -> aiohttp.ClientSession:
         if self.session is None or self.session.closed:
             resolver = aiohttp.AsyncResolver(nameservers=["1.1.1.1", "8.8.8.8"])
-            connector = aiohttp.TCPConnector(resolver=resolver, ttl_dns_cache=300)
+            # ОПТИМИЗАЦИЯ: Увеличен TTL DNS кэша с 300 сек на 3600 сек (1 час)
+            connector = aiohttp.TCPConnector(resolver=resolver, ttl_dns_cache=3600)
             self.session = aiohttp.ClientSession(connector=connector)
         return self.session
 
     def _generate_signature(self, timestamp: str, recv_window: str, param_str: str) -> str:
         # Склейка строки строго по документации Bybit v5: timestamp + api_key + recv_window + params
         val = timestamp + self.api_key + recv_window + param_str
-        # Выводим в лог точный вид строки, которую мы подписываем, для визуального контроля
-        logger.info("ОТЛАДКА подписи. Строка для хэша: -> %s", val)
+        # ОПТИМИЗАЦИЯ: Логирование только при DEBUG уровне
+        logger.debug("Подпись. Строка для хэша: %s", val)
         return hmac.new(self.api_secret.encode("utf-8"), val.encode("utf-8"), hashlib.sha256).hexdigest()
 
     async def sync_clock(self):
+        """Синхронизация часов один раз при запуске"""
+        if self._clock_synced:
+            return  # Уже синхронизировано
+            
         try:
             start_time = int(time.time() * 1000)
             res = await self.get_server_time()
@@ -55,13 +62,16 @@ class BybitREST:
                 server_time = int(res["result"]["timeNano"]) // 1000000
                 latency = (end_time - start_time) // 2
                 self.time_offset = server_time - start_time - latency
+                self._clock_synced = True
                 logger.info("BybitREST: Часы синхронизированы. Сдвиг ПК: %d ms", self.time_offset)
         except Exception as e:
             logger.error("Не удалось синхронизировать часы: %s", e)
 
     async def _request(self, method: str, path: str, params: Optional[Dict[str, Any]] = None, auth_required: bool = True) -> Dict[str, Any]:
         session = await self._get_session()
-        if auth_required and self.time_offset == 0 and path != "/v5/market/time":
+        
+        # ОПТИМИЗАЦИЯ: Синхронизация только один раз перед авторизованным запросом
+        if auth_required and not self._clock_synced and path != "/v5/market/time":
             await self.sync_clock()
 
         url = f"{self.base_url}{path}"
